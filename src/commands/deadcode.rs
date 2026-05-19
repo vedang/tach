@@ -73,31 +73,10 @@ pub fn check_deadcode(
     let mut diagnostics: Vec<Diagnostic> = resolved_entry_points
         .unresolved
         .iter()
-        .map(|entry_point| {
-            Diagnostic::new_global_warning(DiagnosticDetails::Configuration(
-                ConfigurationDiagnostic::DeadcodeEntryPointNotFound {
-                    entry_point: entry_point.clone(),
-                },
-            ))
-        })
+        .map(|entry_point| deadcode_entry_point_not_found_warning(entry_point))
         .collect();
 
-    let mut project_files: Vec<DeadcodeFile> = Vec::new();
-    for source_root in &source_roots {
-        project_files.extend(
-            file_walker
-                .walk_pyfiles(&source_root.display().to_string())
-                .filter_map(|file_path| {
-                    let abs_path = source_root.join(&file_path);
-                    fs::file_to_module_path(&source_roots, &abs_path)
-                        .ok()
-                        .map(|module_path| DeadcodeFile::new(abs_path, module_path))
-                }),
-        );
-    }
-
-    project_files.sort_by_key(|file| file.file_path.clone());
-    project_files.dedup_by_key(|file| file.file_path.clone());
+    let project_files = collect_project_files(&source_roots, &file_walker);
 
     let mut graph = FileImportGraph::new();
     for file in &project_files {
@@ -110,12 +89,11 @@ pub fn check_deadcode(
         let content = match fs::read_file_content(&file.file_path) {
             Ok(content) => content,
             Err(_) => {
-                parse_failures.insert(file.file_path.clone());
-                diagnostics.push(Diagnostic::new_global_warning(
-                    DiagnosticDetails::Configuration(ConfigurationDiagnostic::SkippedFileIoError {
-                        file_path: file.file_path.display().to_string(),
-                    }),
-                ));
+                push_skipped_file_io_warning(
+                    &mut diagnostics,
+                    &mut parse_failures,
+                    &file.file_path,
+                );
                 continue;
             }
         };
@@ -123,23 +101,19 @@ pub fn check_deadcode(
         let python_source = match parse_python_source(&content) {
             Ok(source) => source,
             Err(ParsingError::PythonParse(_) | ParsingError::InvalidSyntax) => {
-                parse_failures.insert(file.file_path.clone());
-                diagnostics.push(Diagnostic::new_global_error(
-                    DiagnosticDetails::Configuration(
-                        ConfigurationDiagnostic::SkippedFileSyntaxError {
-                            file_path: file.file_path.display().to_string(),
-                        },
-                    ),
-                ));
+                push_skipped_file_syntax_error(
+                    &mut diagnostics,
+                    &mut parse_failures,
+                    &file.file_path,
+                );
                 continue;
             }
             Err(ParsingError::Io(_) | ParsingError::Filesystem(_)) => {
-                parse_failures.insert(file.file_path.clone());
-                diagnostics.push(Diagnostic::new_global_warning(
-                    DiagnosticDetails::Configuration(ConfigurationDiagnostic::SkippedFileIoError {
-                        file_path: file.file_path.display().to_string(),
-                    }),
-                ));
+                push_skipped_file_io_warning(
+                    &mut diagnostics,
+                    &mut parse_failures,
+                    &file.file_path,
+                );
                 continue;
             }
         };
@@ -153,14 +127,11 @@ pub fn check_deadcode(
         ) {
             Ok(imports) => imports,
             Err(_) => {
-                parse_failures.insert(file.file_path.clone());
-                diagnostics.push(Diagnostic::new_global_error(
-                    DiagnosticDetails::Configuration(
-                        ConfigurationDiagnostic::SkippedFileSyntaxError {
-                            file_path: file.file_path.display().to_string(),
-                        },
-                    ),
-                ));
+                push_skipped_file_syntax_error(
+                    &mut diagnostics,
+                    &mut parse_failures,
+                    &file.file_path,
+                );
                 continue;
             }
         };
@@ -218,6 +189,64 @@ pub fn check_deadcode(
     }
 
     Ok(sort_diagnostics(diagnostics))
+}
+
+fn deadcode_entry_point_not_found_warning(entry_point: &str) -> Diagnostic {
+    Diagnostic::new_global_warning(DiagnosticDetails::Configuration(
+        ConfigurationDiagnostic::DeadcodeEntryPointNotFound {
+            entry_point: entry_point.to_string(),
+        },
+    ))
+}
+
+fn collect_project_files(
+    source_roots: &[PathBuf],
+    file_walker: &fs::FSWalker,
+) -> Vec<DeadcodeFile> {
+    let mut project_files = Vec::new();
+
+    for source_root in source_roots {
+        project_files.extend(
+            file_walker
+                .walk_pyfiles(&source_root.display().to_string())
+                .filter_map(|file_path| {
+                    let abs_path = source_root.join(&file_path);
+                    fs::file_to_module_path(source_roots, &abs_path)
+                        .ok()
+                        .map(|module_path| DeadcodeFile::new(abs_path, module_path))
+                }),
+        );
+    }
+
+    project_files.sort_by_key(|file| file.file_path.clone());
+    project_files.dedup_by_key(|file| file.file_path.clone());
+    project_files
+}
+
+fn push_skipped_file_syntax_error(
+    diagnostics: &mut Vec<Diagnostic>,
+    parse_failures: &mut BTreeSet<PathBuf>,
+    file_path: &Path,
+) {
+    parse_failures.insert(file_path.to_path_buf());
+    diagnostics.push(Diagnostic::new_global_error(
+        DiagnosticDetails::Configuration(ConfigurationDiagnostic::SkippedFileSyntaxError {
+            file_path: file_path.display().to_string(),
+        }),
+    ));
+}
+
+fn push_skipped_file_io_warning(
+    diagnostics: &mut Vec<Diagnostic>,
+    parse_failures: &mut BTreeSet<PathBuf>,
+    file_path: &Path,
+) {
+    parse_failures.insert(file_path.to_path_buf());
+    diagnostics.push(Diagnostic::new_global_warning(
+        DiagnosticDetails::Configuration(ConfigurationDiagnostic::SkippedFileIoError {
+            file_path: file_path.display().to_string(),
+        }),
+    ));
 }
 
 fn deadcode_exclude_paths(project_config: &ProjectConfig) -> Vec<String> {
