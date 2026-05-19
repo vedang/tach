@@ -166,6 +166,87 @@ In case you would like to explicitly allow a certain external module, this can b
     distribution metadata to map module names like 'git' to their distributions
     ('GitPython').
 
+## tach deadcode
+
+Tach can detect Python files and modules that are not reachable from your configured entry points.
+
+```
+usage: tach deadcode [-h] [--entry-point ENTRY_POINT] [--files] [--symbols]
+                     [--all] [--output {text,json}] [-e file_or_path,...]
+
+Detect unreachable files and top-level symbols.
+
+options:
+  -h, --help            show this help message and exit
+  --entry-point ENTRY_POINT
+                        Entry point path, module, or module:symbol seed. May
+                        be repeated.
+  --files               Detect unreachable files/modules only.
+  --symbols             Detect unreachable top-level symbols only.
+  --all                 Detect both files/modules and top-level symbols.
+  --output {text,json}  Output format (default: text)
+  -e, --exclude file_or_path,...
+                        Comma separated path list to exclude. tests/, ci/,
+                        etc.
+```
+
+By default, `tach deadcode` uses the detection modes configured in [`[deadcode]`](configuration.md#deadcode). If no detection mode is configured, Tach reports unreachable files and modules.
+
+### Entry Points
+
+Entry points are the roots of the reachability graph. Tach follows first-party imports from those roots; files outside that graph are reported as dead code.
+
+Entry points can be:
+
+- File paths, such as `--entry-point app.py`
+- Module paths, such as `--entry-point my_package.cli`
+- Module symbols, such as `--entry-point my_package.cli:main`
+
+You can repeat `--entry-point` or configure `entry_points` in `tach.toml`. If no entry points resolve, Tach emits a warning and skips dead-code findings instead of marking the whole project dead.
+
+### Detection Modes
+
+Use flags to override the configured detection modes for one run:
+
+- `--files`: report unreachable files and modules
+- `--symbols`: report unreachable top-level symbols when symbol detection is enabled
+- `--all`: report both files/modules and top-level symbols
+
+!!! note
+    File/module detection is the conservative default. Symbol detection uses the same entry points and is intended for top-level functions, classes, and variables.
+
+### Examples
+
+Run with configured entry points:
+
+```bash
+tach deadcode
+```
+
+Check a script entry point and return machine-readable diagnostics:
+
+```bash
+tach deadcode --entry-point app.py --files --output json
+```
+
+Treat multiple application roots as reachable:
+
+```bash
+tach deadcode --entry-point web.app --entry-point worker.py
+```
+
+Configure defaults in `tach.toml`:
+
+```toml
+[deadcode]
+entry_points = ["app.py", "pkg.cli:main"]
+detect = ["files"]
+severity = "warn"
+ignore = ["pkg.legacy", "pkg/generated.py"]
+```
+
+See [`[deadcode]`](configuration.md#deadcode) for all configuration options.
+
 ## tach report
 
 Tach can generate a report showing all the dependencies and usages of a given module.
