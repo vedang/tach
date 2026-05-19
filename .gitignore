@@ -160,3 +160,6 @@ profile.json
 
 # tach
 .tach
+
+# Development files
+.agents/plans/
