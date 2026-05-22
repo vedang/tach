@@ -8,18 +8,21 @@ use ruff_source_file::LineIndex;
 use ruff_text_size::TextRange;
 
 use crate::config::ProjectConfig;
-use crate::deadcode::{FileImportGraph, resolve_entry_points};
+use crate::deadcode::{FileImportGraph, frameworks::fastapi, resolve_entry_points};
 use crate::filesystem as fs;
 use crate::python::parsing::parse_python_source;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct SymbolKey {
-    module_path: String,
-    symbol_name: String,
+pub(in crate::deadcode) struct SymbolKey {
+    pub(in crate::deadcode) module_path: String,
+    pub(in crate::deadcode) symbol_name: String,
 }
 
 impl SymbolKey {
-    fn new(module_path: impl Into<String>, symbol_name: impl Into<String>) -> Self {
+    pub(in crate::deadcode) fn new(
+        module_path: impl Into<String>,
+        symbol_name: impl Into<String>,
+    ) -> Self {
         Self {
             module_path: module_path.into(),
             symbol_name: symbol_name.into(),
@@ -74,16 +77,18 @@ struct SymbolDefinition {
 }
 
 #[derive(Debug, Clone)]
-struct ModuleSymbols {
+pub(in crate::deadcode) struct ModuleSymbols {
     symbols: BTreeMap<String, SymbolDefinition>,
     module_references: BTreeSet<SymbolKey>,
+    imports: BTreeMap<String, ImportTarget>,
     exports: BTreeSet<String>,
     star_imports: Vec<String>,
     is_dynamic: bool,
+    pub(in crate::deadcode) fastapi: fastapi::ModuleInfo,
 }
 
 #[derive(Debug, Clone)]
-enum ImportTarget {
+pub(in crate::deadcode) enum ImportTarget {
     Module(String),
     Symbol(SymbolKey),
 }
@@ -133,20 +138,28 @@ impl<'a> ModuleCollector<'a> {
         }
     }
 
-    fn finish(self) -> ModuleSymbols {
+    fn finish(self, fastapi: fastapi::ModuleInfo) -> ModuleSymbols {
         ModuleSymbols {
             symbols: self.symbols,
             module_references: self.module_references,
+            imports: self.imports,
             exports: self.exports,
             star_imports: self.star_imports,
             is_dynamic: self.is_dynamic,
+            fastapi,
         }
     }
 
     fn collect(mut self, body: &[Stmt]) -> ModuleSymbols {
         self.collect_imports_and_definitions(body);
+        let fastapi = fastapi::collect_module_info(
+            &self.module_path,
+            body,
+            &self.imports,
+            &self.local_symbols,
+        );
         self.collect_references(body);
-        self.finish()
+        self.finish(fastapi)
     }
 
     fn collect_imports_and_definitions(&mut self, body: &[Stmt]) {
@@ -266,25 +279,41 @@ impl<'a> ModuleCollector<'a> {
                     symbol.has_public_decorator = true;
                 }
 
+                let mut signature_collector = ReferenceCollector::new(
+                    &self.module_path,
+                    &self.local_symbols,
+                    &self.imports,
+                    BTreeSet::new(),
+                );
+                for decorator in &function.decorator_list {
+                    signature_collector.visit_expr(&decorator.expression);
+                }
+                for parameter in function.parameters.iter() {
+                    if let Some(annotation) = parameter.annotation() {
+                        signature_collector.visit_expr(annotation);
+                    }
+                    if let Some(default) = parameter.default() {
+                        signature_collector.visit_expr(default);
+                    }
+                }
+                if let Some(returns) = &function.returns {
+                    signature_collector.visit_expr(returns);
+                }
+
                 let shadowed =
                     collect_function_shadowed_names(&function.parameters, &function.body);
-                let mut collector = ReferenceCollector::new(
+                let mut body_collector = ReferenceCollector::new(
                     &self.module_path,
                     &self.local_symbols,
                     &self.imports,
                     shadowed,
                 );
-                for decorator in &function.decorator_list {
-                    collector.visit_expr(&decorator.expression);
-                }
                 for stmt in &function.body {
-                    collector.visit_stmt(stmt);
-                }
-                if let Some(returns) = &function.returns {
-                    collector.visit_expr(returns);
+                    body_collector.visit_stmt(stmt);
                 }
                 if let Some(symbol) = self.symbols.get_mut(&symbol_name) {
-                    symbol.references.extend(collector.references);
+                    symbol.references.extend(signature_collector.references);
+                    symbol.references.extend(body_collector.references);
                 }
             }
             Stmt::ClassDef(class) => {
@@ -702,6 +731,12 @@ fn seed_live_symbols(
                 let key = SymbolKey::new(module_path.clone(), symbol_name.clone());
                 if symbol_exists(modules, &key) {
                     live.insert(key);
+                    continue;
+                }
+                if let Some(ImportTarget::Symbol(imported_symbol)) = module.imports.get(symbol_name)
+                    && symbol_exists(modules, imported_symbol)
+                {
+                    live.insert(imported_symbol.clone());
                 }
             }
         }
@@ -733,13 +768,14 @@ fn seed_live_symbols(
         }
     }
 
-    for entry_symbol in
-        entry_point_symbol_seeds(project_root, source_roots, file_walker, graph, entry_points)
-    {
-        if symbol_exists(modules, &entry_symbol) {
-            live.insert(entry_symbol);
+    let entry_symbol_seeds =
+        entry_point_symbol_seeds(project_root, source_roots, file_walker, graph, entry_points);
+    for entry_symbol in &entry_symbol_seeds {
+        if symbol_exists(modules, entry_symbol) {
+            live.insert(entry_symbol.clone());
         }
     }
+    live.extend(fastapi::live_symbols(modules, &entry_symbol_seeds));
 
     live
 }

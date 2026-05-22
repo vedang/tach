@@ -436,6 +436,11 @@ def test_deadcode_phase2_respects_public_and_dynamic_symbol_seeds(
     assert "dynamic_dead" not in dead_symbol_names
     assert "nested_unused" not in dead_symbol_names
     assert "method" not in dead_symbol_names
+    assert "DEFAULT_LABEL" not in dead_symbol_names
+    assert "SignaturePayload" not in dead_symbol_names
+    assert "signature_dependency" not in dead_symbol_names
+    assert "signature_default_factory" not in dead_symbol_names
+    assert "reexported_service" not in dead_symbol_names
 
 
 def test_deadcode_phase2_all_reports_dead_file_without_nested_dead_symbols(
@@ -452,3 +457,99 @@ def test_deadcode_phase2_all_reports_dead_file_without_nested_dead_symbols(
         symbol_name != "unused_in_dead_file"
         for _, symbol_name, _ in _dead_symbols(diagnostics)
     )
+
+
+def test_deadcode_respect_all_keeps_imported_alias_exports(example_dir: Path) -> None:
+    diagnostics = _deadcode_diagnostics_for(
+        example_dir / "deadcode_all_alias_true",
+        files=False,
+        symbols=True,
+    )
+
+    assert _dead_symbols(diagnostics) == {("pkg.impl", "UnusedThing", "class")}
+
+
+def test_deadcode_respect_all_false_reports_imported_alias_exports(
+    example_dir: Path,
+) -> None:
+    diagnostics = _deadcode_diagnostics_for(
+        example_dir / "deadcode_all_alias_false",
+        files=False,
+        symbols=True,
+    )
+
+    assert _dead_symbols(diagnostics) == {
+        ("pkg.impl", "Thing", "class"),
+        ("pkg.impl", "UnusedThing", "class"),
+    }
+
+
+def test_deadcode_fastapi_route_graph_keeps_reachable_handlers(
+    example_dir: Path,
+) -> None:
+    diagnostics = _deadcode_diagnostics_for(
+        example_dir / "deadcode_fastapi",
+        files=False,
+        symbols=True,
+    )
+    dead_symbols = _dead_symbols(diagnostics)
+    dead_names = {symbol_name for _, symbol_name, _ in dead_symbols}
+
+    assert "health_check" not in dead_names
+    assert "status_check" not in dead_names
+    assert "read_item" not in dead_names
+    assert "head_items" not in dead_names
+    assert "websocket_endpoint" not in dead_names
+
+    assert ("app", "unused_local", "function") in dead_symbols
+    assert ("pkg.api", "unused_api_handler", "function") in dead_symbols
+    assert ("pkg.nested", "unused_nested", "function") in dead_symbols
+    assert ("pkg.admin", "admin_handler", "function") in dead_symbols
+    assert ("pkg.admin", "unused_admin_helper", "function") in dead_symbols
+
+
+def test_deadcode_fastapi_dependencies_are_recursive(example_dir: Path) -> None:
+    diagnostics = _deadcode_diagnostics_for(
+        example_dir / "deadcode_fastapi",
+        files=False,
+        symbols=True,
+    )
+    dead_symbols = _dead_symbols(diagnostics)
+    dead_names = {symbol_name for _, symbol_name, _ in dead_symbols}
+
+    assert "get_user" not in dead_names
+    assert "nested_dependency" not in dead_names
+    assert "SECURITY" not in dead_names
+
+    assert ("pkg.deps", "UNUSED_DEP_VALUE", "variable") in dead_symbols
+    assert ("pkg.deps", "unused_dependency", "function") in dead_symbols
+
+
+def test_deadcode_fastapi_pydantic_request_response_models(example_dir: Path) -> None:
+    diagnostics = _deadcode_diagnostics_for(
+        example_dir / "deadcode_fastapi",
+        files=False,
+        symbols=True,
+    )
+    dead_symbols = _dead_symbols(diagnostics)
+    dead_names = {symbol_name for _, symbol_name, _ in dead_symbols}
+
+    assert "ItemIn" not in dead_names
+    assert "ItemOut" not in dead_names
+    assert "Metadata" not in dead_names
+    assert "UserContext" not in dead_names
+
+    assert ("pkg.models", "UnusedModel", "class") in dead_symbols
+
+
+def test_deadcode_fastapi_ignores_local_constructor_shadows(example_dir: Path) -> None:
+    diagnostics = _deadcode_diagnostics_for(
+        example_dir / "deadcode_fastapi_shadow",
+        files=False,
+        symbols=True,
+    )
+
+    assert _dead_symbols(diagnostics) == {
+        ("app", "shadow_app_route", "function"),
+        ("app", "shadow_router_route", "function"),
+    }

@@ -14,5 +14,9 @@ def module_attr_target():
     return helper(USED_VALUE)
 
 
+def reexported_service():
+    return helper(USED_VALUE)
+
+
 def unused_service():
     return "dead"

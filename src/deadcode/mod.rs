@@ -1,4 +1,5 @@
 pub mod entrypoints;
+pub(in crate::deadcode) mod frameworks;
 pub mod graph;
 pub mod symbols;
 pub mod types;

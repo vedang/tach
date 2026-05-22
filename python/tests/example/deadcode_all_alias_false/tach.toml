@@ -1,0 +1,8 @@
+exclude = []
+source_roots = ["."]
+
+[deadcode]
+entry_points = ["app.py"]
+detect = ["symbols"]
+severity = "warn"
+respect_all = false

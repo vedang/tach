@@ -1,13 +1,38 @@
-from .service import USED_VALUE, helper
+from typing import Annotated
 
-__all__ = ["exported_by_all"]
+from fastapi import Depends
+
+from .service import USED_VALUE, helper, reexported_service as exported_service
+
+__all__ = ["exported_by_all", "exported_service"]
 
 
 def public_api(func):
     return func
 
 
-def used_function():
+DEFAULT_LABEL = "default"
+
+
+class SignaturePayload:
+    pass
+
+
+def signature_dependency():
+    return "dependency"
+
+
+def signature_default_factory():
+    return "default"
+
+
+def used_function(
+    payload: SignaturePayload,
+    annotated: Annotated[SignaturePayload, Depends(signature_dependency)] = Depends(
+        signature_default_factory
+    ),
+    label=DEFAULT_LABEL,
+):
     def nested_unused():
         return "nested"
 
