@@ -484,9 +484,9 @@ def test_deadcode_respect_all_false_reports_imported_alias_exports(
     }
 
 
-def test_deadcode_fastapi_route_graph_keeps_reachable_handlers(
+def _dead_fastapi_symbol_sets(
     example_dir: Path,
-) -> None:
+) -> tuple[set[tuple[str, str, str]], set[str]]:
     diagnostics = _deadcode_diagnostics_for(
         example_dir / "deadcode_fastapi",
         files=False,
@@ -494,6 +494,13 @@ def test_deadcode_fastapi_route_graph_keeps_reachable_handlers(
     )
     dead_symbols = _dead_symbols(diagnostics)
     dead_names = {symbol_name for _, symbol_name, _ in dead_symbols}
+    return dead_symbols, dead_names
+
+
+def test_deadcode_fastapi_route_graph_keeps_reachable_handlers(
+    example_dir: Path,
+) -> None:
+    dead_symbols, dead_names = _dead_fastapi_symbol_sets(example_dir)
 
     assert "health_check" not in dead_names
     assert "status_check" not in dead_names
@@ -509,13 +516,7 @@ def test_deadcode_fastapi_route_graph_keeps_reachable_handlers(
 
 
 def test_deadcode_fastapi_dependencies_are_recursive(example_dir: Path) -> None:
-    diagnostics = _deadcode_diagnostics_for(
-        example_dir / "deadcode_fastapi",
-        files=False,
-        symbols=True,
-    )
-    dead_symbols = _dead_symbols(diagnostics)
-    dead_names = {symbol_name for _, symbol_name, _ in dead_symbols}
+    dead_symbols, dead_names = _dead_fastapi_symbol_sets(example_dir)
 
     assert "get_user" not in dead_names
     assert "nested_dependency" not in dead_names
@@ -526,13 +527,7 @@ def test_deadcode_fastapi_dependencies_are_recursive(example_dir: Path) -> None:
 
 
 def test_deadcode_fastapi_pydantic_request_response_models(example_dir: Path) -> None:
-    diagnostics = _deadcode_diagnostics_for(
-        example_dir / "deadcode_fastapi",
-        files=False,
-        symbols=True,
-    )
-    dead_symbols = _dead_symbols(diagnostics)
-    dead_names = {symbol_name for _, symbol_name, _ in dead_symbols}
+    dead_symbols, dead_names = _dead_fastapi_symbol_sets(example_dir)
 
     assert "ItemIn" not in dead_names
     assert "ItemOut" not in dead_names

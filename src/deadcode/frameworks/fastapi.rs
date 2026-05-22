@@ -16,29 +16,11 @@ const ROUTE_DECORATORS: &[&str] = &[
     "websocket",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ObjectKind {
-    App,
-    Router,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct IncludeEdge {
-    parent: SymbolKey,
-    child: SymbolKey,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct RouteEdge {
-    router: SymbolKey,
-    handler: SymbolKey,
-}
-
 #[derive(Debug, Clone, Default)]
 pub(in crate::deadcode) struct ModuleInfo {
-    objects: BTreeMap<SymbolKey, ObjectKind>,
-    includes: BTreeSet<IncludeEdge>,
-    routes: BTreeSet<RouteEdge>,
+    objects: BTreeSet<SymbolKey>,
+    includes: BTreeMap<SymbolKey, BTreeSet<SymbolKey>>,
+    routes: BTreeMap<SymbolKey, BTreeSet<SymbolKey>>,
 }
 
 pub(in crate::deadcode) fn collect_module_info(
@@ -62,37 +44,21 @@ pub(in crate::deadcode) fn live_symbols(
     modules: &BTreeMap<String, ModuleSymbols>,
     root_symbols: &BTreeSet<SymbolKey>,
 ) -> BTreeSet<SymbolKey> {
-    let mut objects = BTreeMap::<SymbolKey, ObjectKind>::new();
+    let mut objects = BTreeSet::<SymbolKey>::new();
     let mut includes = BTreeMap::<SymbolKey, BTreeSet<SymbolKey>>::new();
     let mut routes = BTreeMap::<SymbolKey, BTreeSet<SymbolKey>>::new();
 
     for module in modules.values() {
-        objects.extend(
-            module
-                .fastapi
-                .objects
-                .iter()
-                .map(|(key, kind)| (key.clone(), *kind)),
-        );
-        for include in &module.fastapi.includes {
-            includes
-                .entry(include.parent.clone())
-                .or_default()
-                .insert(include.child.clone());
-        }
-        for route in &module.fastapi.routes {
-            routes
-                .entry(route.router.clone())
-                .or_default()
-                .insert(route.handler.clone());
-        }
+        objects.extend(module.fastapi.objects.iter().cloned());
+        extend_edges(&mut includes, &module.fastapi.includes);
+        extend_edges(&mut routes, &module.fastapi.routes);
     }
 
     let mut live = BTreeSet::<SymbolKey>::new();
     let mut queue = VecDeque::<SymbolKey>::new();
 
     for root in root_symbols {
-        if objects.contains_key(root) && live.insert(root.clone()) {
+        if objects.contains(root) && live.insert(root.clone()) {
             queue.push_back(root.clone());
         }
     }
@@ -100,7 +66,7 @@ pub(in crate::deadcode) fn live_symbols(
     while let Some(current) = queue.pop_front() {
         if let Some(children) = includes.get(&current) {
             for child in children {
-                if objects.contains_key(child) && live.insert(child.clone()) {
+                if objects.contains(child) && live.insert(child.clone()) {
                     queue.push_back(child.clone());
                 }
             }
@@ -116,6 +82,18 @@ pub(in crate::deadcode) fn live_symbols(
     live
 }
 
+fn extend_edges(
+    target: &mut BTreeMap<SymbolKey, BTreeSet<SymbolKey>>,
+    source: &BTreeMap<SymbolKey, BTreeSet<SymbolKey>>,
+) {
+    for (from, tos) in source {
+        target
+            .entry(from.clone())
+            .or_default()
+            .extend(tos.iter().cloned());
+    }
+}
+
 fn collect_object_assignment(
     module_path: &str,
     stmt: &Stmt,
@@ -124,13 +102,13 @@ fn collect_object_assignment(
 ) {
     match stmt {
         Stmt::Assign(assign) => {
-            let Some(kind) = fastapi_constructor_kind(&assign.value, imports) else {
+            if !is_fastapi_constructor(&assign.value, imports) {
                 return;
-            };
+            }
             for target in &assign.targets {
                 if let Some(name) = simple_name(target) {
                     info.objects
-                        .insert(SymbolKey::new(module_path, name.to_string()), kind);
+                        .insert(SymbolKey::new(module_path, name.to_string()));
                 }
             }
         }
@@ -138,14 +116,14 @@ fn collect_object_assignment(
             let Some(value) = &assign.value else {
                 return;
             };
-            let Some(kind) = fastapi_constructor_kind(value, imports) else {
+            if !is_fastapi_constructor(value, imports) {
                 return;
-            };
+            }
             if assign.simple
                 && let Some(name) = simple_name(&assign.target)
             {
                 info.objects
-                    .insert(SymbolKey::new(module_path, name.to_string()), kind);
+                    .insert(SymbolKey::new(module_path, name.to_string()));
             }
         }
         _ => {}
@@ -166,7 +144,7 @@ fn collect_include_edge(
     else {
         return;
     };
-    info.includes.insert(IncludeEdge { parent, child });
+    info.includes.entry(parent).or_default().insert(child);
 }
 
 fn collect_route_edge(
@@ -185,10 +163,10 @@ fn collect_route_edge(
         if let Some(router) =
             route_decorator_object(&decorator.expression, module_path, imports, local_symbols)
         {
-            info.routes.insert(RouteEdge {
-                router,
-                handler: handler.clone(),
-            });
+            info.routes
+                .entry(router)
+                .or_default()
+                .insert(handler.clone());
         }
     }
 }
@@ -202,19 +180,15 @@ fn statement_expression(stmt: &Stmt) -> Option<&Expr> {
     }
 }
 
-fn fastapi_constructor_kind(
-    expr: &Expr,
-    imports: &BTreeMap<String, ImportTarget>,
-) -> Option<ObjectKind> {
+fn is_fastapi_constructor(expr: &Expr, imports: &BTreeMap<String, ImportTarget>) -> bool {
     let Expr::Call(call) = expr else {
-        return None;
+        return false;
     };
 
-    match expression_path(&call.func, imports).as_deref() {
-        Some("fastapi.FastAPI") => Some(ObjectKind::App),
-        Some("fastapi.APIRouter") => Some(ObjectKind::Router),
-        _ => None,
-    }
+    matches!(
+        expression_path(&call.func, imports).as_deref(),
+        Some("fastapi.FastAPI" | "fastapi.APIRouter")
+    )
 }
 
 fn include_router_edge(
